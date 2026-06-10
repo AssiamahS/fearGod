@@ -50,7 +50,43 @@ final class BibleDatabase {
         return 0
     }
 
+    func book(id: Int) -> Book? {
+        let sql = "SELECT id, name_en, name_twi, abbrev, testament FROM books WHERE id = ?"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int(stmt, 1, Int32(id))
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return Book(
+            id:       Int(sqlite3_column_int(stmt, 0)),
+            nameEn:   String(cString: sqlite3_column_text(stmt, 1)),
+            nameTwi:  String(cString: sqlite3_column_text(stmt, 2)),
+            abbrev:   String(cString: sqlite3_column_text(stmt, 3)),
+            testament: Int(sqlite3_column_int(stmt, 4))
+        )
+    }
+
     // MARK: - Verses
+
+    func verse(bookId: Int, chapter: Int, verse: Int) -> Verse? {
+        let sql = "SELECT id, book_id, chapter, verse, kjv, twi FROM verses WHERE book_id = ? AND chapter = ? AND verse = ?"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int(stmt, 1, Int32(bookId))
+        sqlite3_bind_int(stmt, 2, Int32(chapter))
+        sqlite3_bind_int(stmt, 3, Int32(verse))
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        let twiPtr = sqlite3_column_text(stmt, 5)
+        return Verse(
+            id:      Int(sqlite3_column_int(stmt, 0)),
+            bookId:  Int(sqlite3_column_int(stmt, 1)),
+            chapter: Int(sqlite3_column_int(stmt, 2)),
+            verse:   Int(sqlite3_column_int(stmt, 3)),
+            kjv:     String(cString: sqlite3_column_text(stmt, 4)),
+            twi:     twiPtr != nil ? String(cString: twiPtr!) : nil
+        )
+    }
 
     func verses(bookId: Int, chapter: Int) -> [Verse] {
         var verses: [Verse] = []

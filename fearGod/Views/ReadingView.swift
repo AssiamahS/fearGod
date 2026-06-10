@@ -12,8 +12,13 @@ struct ReadingView: View {
     @State private var verses: [Verse] = []
     @State private var totalChapters = 0
     @State private var fontSize: CGFloat = 15
+    @State private var shareImage: UIImage?
+    @State private var shareText = ""
+    @State private var showShare = false
+    @State private var audioErrorShown = false
 
     @StateObject private var tts = TTSEngine.shared
+    @StateObject private var bbAudio = BibleBrainAudio.shared
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -26,12 +31,18 @@ struct ReadingView: View {
                             fontSize: fontSize
                         )
                         .id(idx)
+                        .contextMenu { verseMenu(for: verse) }
                         Divider().opacity(0.3)
                     }
                 }
                 .padding(.vertical, 8)
             }
             .onChange(of: tts.highlight.verseIndex) { newIdx in
+                if let i = newIdx {
+                    withAnimation { proxy.scrollTo(i, anchor: .center) }
+                }
+            }
+            .onChange(of: bbAudio.activeVerseIndex) { newIdx in
                 if let i = newIdx {
                     withAnimation { proxy.scrollTo(i, anchor: .center) }
                 }
@@ -45,23 +56,98 @@ struct ReadingView: View {
             if tts.playingBookId == book.id && tts.playingChapter == chapter {
                 tts.stop()
             }
+            if bbAudio.playingBookId == book.id && bbAudio.playingChapter == chapter {
+                bbAudio.stop()
+            }
+        }
+        .onChange(of: bbAudio.lastError) { err in
+            audioErrorShown = err != nil
+        }
+        .alert("Twi Audio", isPresented: $audioErrorShown) {
+            Button("OK") { bbAudio.lastError = nil }
+        } message: {
+            Text(bbAudio.lastError ?? "")
+        }
+        .sheet(isPresented: $showShare) {
+            if let img = shareImage {
+                VerseShareSheet(image: img, text: shareText)
+                    .presentationDetents([.medium, .large])
+            }
+        }
+    }
+
+    // MARK: - Per-verse menu
+
+    @ViewBuilder
+    private func verseMenu(for verse: Verse) -> some View {
+        Button {
+            FavoritesStore.shared.toggle(verse)
+        } label: {
+            Label(
+                FavoritesStore.shared.isFavorite(verse) ? "Remove from Saved" : "Save Verse",
+                systemImage: FavoritesStore.shared.isFavorite(verse) ? "heart.slash" : "heart"
+            )
+        }
+        Button {
+            let dv = DailyVerse(verse: verse, book: book)
+            shareImage = VerseCardRenderer.image(for: dv)
+            shareText = "\(verse.twi ?? verse.kjv) — \(dv.referenceTwi) (\(dv.referenceEn))"
+            if shareImage != nil { showShare = true }
+        } label: {
+            Label("Share as Card", systemImage: "square.and.arrow.up")
+        }
+        Button {
+            let ref = "\(book.nameEn) \(verse.chapter):\(verse.verse)"
+            UIPasteboard.general.string = [verse.twi, verse.kjv].compactMap { $0 }.joined(separator: "\n") + "\n— \(ref)"
+        } label: {
+            Label("Copy", systemImage: "doc.on.doc")
+        }
+        if verse.twi != nil {
+            Button {
+                tts.speakVerse(verse, language: .twi)
+            } label: {
+                Label("Listen in Twi", systemImage: "speaker.wave.2")
+            }
         }
     }
 
     // MARK: - Toolbar
 
+    private var isPlayingThisChapter: Bool {
+        (tts.isPlaying && tts.playingBookId == book.id && tts.playingChapter == chapter)
+            || ((bbAudio.isPlaying || bbAudio.isLoading) && bbAudio.playingBookId == book.id && bbAudio.playingChapter == chapter)
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .navigationBarTrailing) {
-            Button {
-                if tts.isPlaying && tts.playingBookId == book.id && tts.playingChapter == chapter {
+            if isPlayingThisChapter {
+                Button {
                     tts.stop()
-                } else {
-                    tts.play(verses: verses, bookId: book.id, chapter: chapter)
+                    bbAudio.stop()
+                } label: {
+                    Image(systemName: "stop.fill")
                 }
-            } label: {
-                let isThisChapter = tts.isPlaying && tts.playingBookId == book.id && tts.playingChapter == chapter
-                Image(systemName: isThisChapter ? "stop.fill" : "play.fill")
+            } else {
+                Menu {
+                    Button {
+                        bbAudio.play(bookAbbrev: book.abbrev, chapter: chapter, bookId: book.id, verseCount: verses.count)
+                    } label: {
+                        Label("Twi — Human Audio", systemImage: "person.wave.2")
+                    }
+                    Button {
+                        tts.play(verses: verses, bookId: book.id, chapter: chapter, language: .twi)
+                    } label: {
+                        Label("Twi — Robot Voice (beta)", systemImage: "waveform")
+                    }
+                    Button {
+                        tts.play(verses: verses, bookId: book.id, chapter: chapter, language: .english)
+                    } label: {
+                        Label("English", systemImage: "speaker.wave.2")
+                    }
+                } label: {
+                    Image(systemName: "play.fill")
+                }
             }
 
             Button { if chapter > 1 { loadChapter(chapter - 1) } } label: {
@@ -91,6 +177,7 @@ struct ReadingView: View {
 
     private func loadChapter(_ ch: Int) {
         tts.stop()
+        bbAudio.stop()
         chapter = ch
         if totalChapters == 0 {
             totalChapters = BibleDatabase.shared.chapterCount(bookId: book.id)
@@ -150,8 +237,14 @@ private struct VerseRow: View {
     let fontSize: CGFloat
 
     @StateObject private var tts = TTSEngine.shared
+    @StateObject private var bbAudio = BibleBrainAudio.shared
 
-    private var isActiveSentence: Bool { tts.highlight.verseIndex == verseIndex }
+    private var isActiveSentence: Bool {
+        if tts.highlight.verseIndex == verseIndex { return true }
+        return bbAudio.playingBookId == verse.bookId
+            && bbAudio.playingChapter == verse.chapter
+            && bbAudio.activeVerseIndex == verseIndex
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
